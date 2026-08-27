@@ -30,15 +30,16 @@ export default async function handler(req, res) {
 
     if (type === 'url' && content) {
       const axios = (await import('axios')).default;
-      const cheerio = (await import('cheerio')).default;
-      
+      const cheerio = await import('cheerio'); // ✅ .default 제거 (cheerio는 named export만 제공)
+
       const response = await axios.get(content, {
-        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+        timeout: 10000
       });
-      const $ = cheerio.load(response.data);
+      const $ = cheerio.load(response.data); // ✅ 정상 작동
       $('script, style, nav, footer, header, iframe').remove();
       textToAnalyze = $('body').text().replace(/\s+/g, ' ').trim();
-      
+
       if (textToAnalyze.length < 100) {
         return res.status(400).json({ error: '해당 URL에서 충분한 텍스트를 찾을 수 없습니다.' });
       }
@@ -77,10 +78,16 @@ export default async function handler(req, res) {
     });
 
     const aiData = await groqResponse.json();
-    const cleanJson = aiData.choices[0].message.content.replace(/```json\n?|\n?```/g, '').trim();
-    
-    return res.status(200).json(JSON.parse(cleanJson));
 
+    // ✅ Groq 응답 자체가 에러인 경우 대비 (모델명 오류, 키 만료 등)
+    if (!aiData.choices || !aiData.choices[0]) {
+      console.error('Groq API Error:', aiData);
+      return res.status(500).json({ error: 'AI 분석 서버 응답 오류: ' + (aiData.error?.message || JSON.stringify(aiData)) });
+    }
+
+    const cleanJson = aiData.choices[0].message.content.replace(/```json\n?|\n?```/g, '').trim();
+
+    return res.status(200).json(JSON.parse(cleanJson));
   } catch (error) {
     console.error('Analysis Error:', error);
     // 오류 발생 시에도 CORS 헤더가 이미 설정되어 있으므로 안전하게 반환
