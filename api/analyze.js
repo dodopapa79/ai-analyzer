@@ -2,19 +2,18 @@ import axios from 'axios';
 import * as cheerio from 'cheerio';
 
 export default async function handler(req, res) {
-  // 1. CORS 헤더 설정 (가장 중요!)
+  // CORS 헤더 설정
   res.setHeader('Access-Control-Allow-Credentials', 'true');
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
   res.setHeader('Access-Control-Allow-Headers', 'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version, Authorization');
 
-  // 2. OPTIONS 요청(프리플라이트)에 대한 즉시 응답 (리다이렉트 방지)
+  // OPTIONS 요청 처리 (프리플라이트 - 리다이렉트 방지)
   if (req.method === 'OPTIONS') {
-    res.status(200).end();
-    return;
+    return res.status(200).end();
   }
 
-  // 3. POST 요청만 허용
+  // POST 요청만 허용
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method Not Allowed' });
   }
@@ -51,7 +50,7 @@ export default async function handler(req, res) {
         messages: [
           {
             role: 'system',
-            content: `당신은 전문 SEO 및 콘텐츠 분석가입니다. 다음 텍스트를 분석하여 정확히 아래 JSON 형식으로만 답변하세요. (마크다운 코드 블록 사용하지 말고 순수 JSON만 출력)
+            content: `당신은 전문 SEO 및 콘텐츠 분석가입니다. 다음 텍스트를 분석하여 정확히 아래 JSON 형식으로만 답변하세요.
             {
               "summary": "3줄 요약 (각 줄 개행)",
               "keywords": ["키워드1", "키워드2", "키워드3", "키워드4", "키워드5"],
