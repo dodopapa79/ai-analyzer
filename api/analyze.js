@@ -1,12 +1,12 @@
 export default async function handler(req, res) {
-  // 1. CORS 헤더 설정
+  // 1. 무조건 가장 먼저 CORS 헤더를 설정합니다. (오류 발생 시에도 유지됨)
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
 
-  // 2. OPTIONS 요청 처리
+  // 2. 프리플라이트(OPTIONS) 요청 처리
   if (req.method === 'OPTIONS') {
-    return res.status(204).end();
+    return res.status(200).end();
   }
 
   // 3. POST 요청만 허용
@@ -15,10 +15,8 @@ export default async function handler(req, res) {
   }
 
   try {
-    // 4. 요청 본문 파싱 (Content-Type에 관계없이 처리)
+    // 4. 요청 본문 파싱 (Content-Type에 관계없이 안전하게 처리)
     let body = req.body;
-    
-    // 만약 body가 문자열이면 JSON으로 파싱
     if (typeof body === 'string') {
       try {
         body = JSON.parse(body);
@@ -27,10 +25,10 @@ export default async function handler(req, res) {
       }
     }
 
-    const { type, content } = body;
+    const { type, content } = body || {};
     let textToAnalyze = '';
 
-    if (type === 'url') {
+    if (type === 'url' && content) {
       const axios = (await import('axios')).default;
       const cheerio = (await import('cheerio')).default;
       
@@ -44,8 +42,10 @@ export default async function handler(req, res) {
       if (textToAnalyze.length < 100) {
         return res.status(400).json({ error: '해당 URL에서 충분한 텍스트를 찾을 수 없습니다.' });
       }
-    } else {
+    } else if (type === 'text' && content) {
       textToAnalyze = content;
+    } else {
+      return res.status(400).json({ error: 'type과 content가 필요합니다.' });
     }
 
     textToAnalyze = textToAnalyze.substring(0, 4000);
@@ -83,6 +83,7 @@ export default async function handler(req, res) {
 
   } catch (error) {
     console.error('Analysis Error:', error);
-    return res.status(500).json({ error: '분석 중 오류가 발생했습니다.' });
+    // 오류 발생 시에도 CORS 헤더가 이미 설정되어 있으므로 안전하게 반환
+    return res.status(500).json({ error: '분석 중 오류가 발생했습니다: ' + error.message });
   }
 }
