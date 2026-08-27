@@ -1,28 +1,39 @@
-import axios from 'axios';
-import * as cheerio from 'cheerio';
-
 export default async function handler(req, res) {
-  // CORS 헤더 설정
-  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  // 1. CORS 헤더 설정
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
-  res.setHeader('Access-Control-Allow-Headers', 'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version, Authorization');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
-  // OPTIONS 요청 처리 (프리플라이트 - 리다이렉트 방지)
+  // 2. OPTIONS 요청 처리
   if (req.method === 'OPTIONS') {
-    return res.status(200).end();
+    return res.status(204).end();
   }
 
-  // POST 요청만 허용
+  // 3. POST 요청만 허용
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method Not Allowed' });
   }
 
   try {
-    const { type, content } = req.body;
+    // 4. 요청 본문 파싱 (Content-Type에 관계없이 처리)
+    let body = req.body;
+    
+    // 만약 body가 문자열이면 JSON으로 파싱
+    if (typeof body === 'string') {
+      try {
+        body = JSON.parse(body);
+      } catch (e) {
+        return res.status(400).json({ error: '잘못된 요청 형식입니다.' });
+      }
+    }
+
+    const { type, content } = body;
     let textToAnalyze = '';
 
     if (type === 'url') {
+      const axios = (await import('axios')).default;
+      const cheerio = (await import('cheerio')).default;
+      
       const response = await axios.get(content, {
         headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
       });
@@ -50,7 +61,7 @@ export default async function handler(req, res) {
         messages: [
           {
             role: 'system',
-            content: `당신은 전문 SEO 및 콘텐츠 분석가입니다. 다음 텍스트를 분석하여 정확히 아래 JSON 형식으로만 답변하세요.
+            content: `다음 텍스트를 분석하여 정확히 아래 JSON 형식으로만 답변하세요. (마크다운 코드 블록 사용하지 말고 순수 JSON만 출력)
             {
               "summary": "3줄 요약 (각 줄 개행)",
               "keywords": ["키워드1", "키워드2", "키워드3", "키워드4", "키워드5"],
@@ -59,26 +70,16 @@ export default async function handler(req, res) {
               "titles": ["추천제목1", "추천제목2", "추천제목3"]
             }`
           },
-          {
-            role: 'user',
-            content: textToAnalyze
-          }
+          { role: 'user', content: textToAnalyze }
         ],
         temperature: 0.3
       })
     });
 
     const aiData = await groqResponse.json();
+    const cleanJson = aiData.choices[0].message.content.replace(/```json\n?|\n?```/g, '').trim();
     
-    let result;
-    try {
-      const cleanJson = aiData.choices[0].message.content.replace(/```json\n?|\n?```/g, '').trim();
-      result = JSON.parse(cleanJson);
-    } catch (e) {
-      return res.status(500).json({ error: 'AI 응답 파싱 실패', raw: aiData.choices[0].message.content });
-    }
-
-    return res.status(200).json(result);
+    return res.status(200).json(JSON.parse(cleanJson));
 
   } catch (error) {
     console.error('Analysis Error:', error);
