@@ -2,25 +2,33 @@ import axios from 'axios';
 import * as cheerio from 'cheerio';
 
 export default async function handler(req, res) {
-  // CORS 허용
+  // 1. CORS 헤더 설정 (가장 중요!)
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
+  res.setHeader('Access-Control-Allow-Headers', 'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version, Authorization');
 
-  if (req.method === 'OPTIONS') return res.status(200).end();
-  if (req.method !== 'POST') return res.status(405).json({ error: 'POST만 허용됩니다.' });
+  // 2. OPTIONS 요청(프리플라이트)에 대한 즉시 응답 (리다이렉트 방지)
+  if (req.method === 'OPTIONS') {
+    res.status(200).end();
+    return;
+  }
 
-  const { type, content } = req.body;
-  let textToAnalyze = '';
+  // 3. POST 요청만 허용
+  if (req.method !== 'POST') {
+    return res.status(405).json({ error: 'Method Not Allowed' });
+  }
 
   try {
-    // 1. 콘텐츠 가져오기
+    const { type, content } = req.body;
+    let textToAnalyze = '';
+
     if (type === 'url') {
       const response = await axios.get(content, {
         headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
       });
       const $ = cheerio.load(response.data);
-      $('script, style, nav, footer, header').remove();
+      $('script, style, nav, footer, header, iframe').remove();
       textToAnalyze = $('body').text().replace(/\s+/g, ' ').trim();
       
       if (textToAnalyze.length < 100) {
@@ -32,7 +40,6 @@ export default async function handler(req, res) {
 
     textToAnalyze = textToAnalyze.substring(0, 4000);
 
-    // 2. Groq AI에게 분석 요청
     const groqResponse = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
       headers: {
