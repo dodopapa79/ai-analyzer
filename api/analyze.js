@@ -27,6 +27,56 @@ async function callGroq(systemPrompt, userContent, temperature = 0.4) {
   return data.choices[0].message.content;
 }
 
+// HTML(cheerio 객체)에서 "실제로 확인 가능한 사실"들을 뽑아낸다.
+// 텍스트를 벗겨내기 전에 반드시 이걸 먼저 해야, AI가 추측이 아니라
+// 진짜 데이터를 보고 소제목/이미지alt/링크 유무를 판단할 수 있다.
+function extractStructure($) {
+  // 1) 소제목(H1~H3) 목록
+  const headings = [];
+  $('h1, h2, h3').each((i, el) => {
+    const tag = el.tagName.toLowerCase();
+    const text = $(el).text().replace(/\s+/g, ' ').trim();
+    if (text) headings.push(`[${tag.toUpperCase()}] ${text}`);
+  });
+  const headingInfo = headings.length > 0
+    ? `이 글에 실제로 존재하는 소제목 목록 (총 ${headings.length}개):\n${headings.join('\n')}`
+    : '이 글에는 H1/H2/H3 소제목 태그가 하나도 없습니다. (실제로 확인된 사실입니다.)';
+
+  // 2) 이미지 개수 및 alt(사진 설명 글) 존재 여부
+  const images = $('img');
+  const totalImages = images.length;
+  let withAlt = 0;
+  const altSamples = [];
+  images.each((i, el) => {
+    const alt = ($(el).attr('alt') || '').trim();
+    if (alt) {
+      withAlt++;
+      if (altSamples.length < 5) altSamples.push(alt);
+    }
+  });
+  let imageInfo;
+  if (totalImages === 0) {
+    imageInfo = '이 글에는 이미지가 하나도 없습니다. (실제로 확인된 사실입니다.)';
+  } else {
+    imageInfo = `이 글의 이미지 정보: 총 ${totalImages}개 중 ${withAlt}개에 사진 설명 글(alt)이 있습니다.` +
+      (altSamples.length > 0 ? ` 실제 설명 글 예시: ${altSamples.map(a => `"${a}"`).join(', ')}` : '') +
+      (withAlt < totalImages ? ` 나머지 ${totalImages - withAlt}개에는 설명 글이 없습니다.` : '');
+  }
+
+  // 3) 본문 안 링크(내부/외부) 개수
+  const bodyLinks = $('p a, li a, article a').length;
+  const linkInfo = bodyLinks > 0
+    ? `본문 문단/리스트 안에 실제로 걸린 링크가 ${bodyLinks}개 있습니다. (실제로 확인된 사실입니다.)`
+    : '본문 문단/리스트 안에는 링크가 하나도 없습니다. (블로그 하단의 "관련 글" 자동 목록과는 별개입니다.)';
+
+  return { headingInfo, imageInfo, linkInfo };
+}
+
+// 순수 텍스트인지, HTML 태그가 섞여 있는지 간단히 판별
+function looksLikeHtml(str) {
+  return /<\s*[a-zA-Z][^>]*>/.test(str);
+}
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
@@ -49,7 +99,10 @@ export default async function handler(req, res) {
     const { type, content } = body || {};
     let textToAnalyze = '';
     let ownTitle = '';
-    let headingInfo = ''; // AI에게 전달할 "실제 소제목 구조" 정보 (있으면 URL 분석 시에만 채워짐)
+    let headingInfo = '';
+    let imageInfo = '';
+    let linkInfo = '';
+    let structureKnown = false; // 실제 구조(소제목/이미지/링크)를 확인할 수 있었는지 여부
 
     if (type === 'url' && content) {
       const response = await axios.get(content, {
@@ -59,18 +112,11 @@ export default async function handler(req, res) {
       const $ = cheerio.load(response.data);
       ownTitle = $('title').first().text().trim();
 
-      // 본문 텍스트를 벗기기 "전"에, 실제 존재하는 소제목(H1~H3) 목록을 먼저 뽑아둔다.
-      // 이렇게 안 하면 태그가 다 벗겨진 뒤에는 AI가 "소제목이 있는지 없는지" 알 방법이 없어져서,
-      // 실제로는 소제목이 있어도 "없다"고 잘못 진단하는 문제가 생긴다.
-      const headings = [];
-      $('h1, h2, h3').each((i, el) => {
-        const tag = el.tagName.toLowerCase();
-        const text = $(el).text().replace(/\s+/g, ' ').trim();
-        if (text) headings.push(`[${tag.toUpperCase()}] ${text}`);
-      });
-      headingInfo = headings.length > 0
-        ? `이 글에 실제로 존재하는 소제목 목록 (총 ${headings.length}개):\n${headings.join('\n')}`
-        : '이 글에는 H1/H2/H3 소제목 태그가 하나도 없습니다. (이건 실제로 확인된 사실입니다.)';
+      const structure = extractStructure($);
+      headingInfo = structure.headingInfo;
+      imageInfo = structure.imageInfo;
+      linkInfo = structure.linkInfo;
+      structureKnown = true;
 
       $('script, style, nav, footer, header, iframe').remove();
       textToAnalyze = $('body').text().replace(/\s+/g, ' ').trim();
@@ -79,8 +125,28 @@ export default async function handler(req, res) {
         return res.status(400).json({ error: '해당 URL에서 충분한 텍스트를 찾을 수 없습니다.' });
       }
     } else if (type === 'text' && content) {
-      textToAnalyze = content;
-      headingInfo = '(텍스트 직접 입력 방식이라 실제 소제목 태그 구조는 확인할 수 없습니다. 소제목 유무를 단정하지 말고, 필요하다면 "내용 흐름상 소제목으로 나누면 좋겠다" 정도로만 제안하세요.)';
+      if (looksLikeHtml(content)) {
+        // 사용자가 HTML 코드를 붙여넣은 경우 → URL 분석과 동일하게 실제 구조를 파싱
+        const $ = cheerio.load(content);
+        const titleTag = $('title').first().text().trim();
+        const h1First = $('h1').first().text().trim();
+        ownTitle = titleTag || h1First || '';
+
+        const structure = extractStructure($);
+        headingInfo = structure.headingInfo;
+        imageInfo = structure.imageInfo;
+        linkInfo = structure.linkInfo;
+        structureKnown = true;
+
+        $('script, style').remove();
+        textToAnalyze = $.root().text().replace(/\s+/g, ' ').trim();
+      } else {
+        // 순수 텍스트만 붙여넣은 경우 → 구조 확인 불가, 단정하지 않도록 안내
+        textToAnalyze = content;
+        headingInfo = '(순수 텍스트만 입력되어 실제 소제목 태그 구조는 확인할 수 없습니다. 소제목 유무를 단정하지 말고, 필요하다면 "내용 흐름상 소제목으로 나누면 좋겠다" 정도로만 제안하세요.)';
+        imageInfo = '(순수 텍스트만 입력되어 이미지나 사진 설명 글 여부는 확인할 수 없습니다. 이미지 관련 진단은 하지 마세요.)';
+        linkInfo = '(순수 텍스트만 입력되어 링크 여부는 확인할 수 없습니다. 링크 관련 진단은 하지 마세요.)';
+      }
     } else {
       return res.status(400).json({ error: 'type과 content가 필요합니다.' });
     }
@@ -97,14 +163,16 @@ export default async function handler(req, res) {
 - "~해야 합니다" 같은 딱딱한 말투보다, "~하면 좋아요", "~해보세요" 처럼 친근하게 쓰세요.
 - 그렇다고 내용을 얕게 만들지는 마세요. 쉬운 말로 풀되, 이 글의 실제 내용을 근거로 한 구체적인 진단은 유지하세요.
 
-내용 규칙:
+내용 규칙 (가장 중요):
 - "경쟁 글이 이렇다"처럼 실제 확인하지 않은 사실을 지어내지 마세요. 대신 "이런 글에서는 보통 ~~을 다루는 경우가 많아요" 같은 일반적 패턴에 근거해 말하세요.
 - 뻔한 얘기(가독성 좋게 써라, 키워드 넣어라) 말고, 이 글의 실제 내용을 근거로 한 구체적 진단을 하세요.
 - 점수는 후하게 주지 말고, 실제 컨설턴트처럼 냉정하게 평가하세요. 완벽한 글이 아닌 이상 90점 이상은 거의 주지 마세요.
-- 아주 중요: 사용자 메시지에 "이 글에 실제로 존재하는 소제목 목록"이 함께 제공됩니다. 이건 실제로 확인된 사실이니 반드시 그대로 신뢰하세요.
-  - 목록에 소제목이 있으면 "소제목이 없다"고 절대 말하지 마세요. 대신 그 소제목들이 검색에 유리한 키워드를 담고 있는지, 개수가 충분한지, 내용을 잘 요약하는지를 평가하세요.
-  - 목록이 "없다"고 나오면 그때만 소제목 부재를 지적하세요.
-  - 텍스트 직접 입력이라 확인이 불가능하다고 안내된 경우엔, 소제목 유무를 절대 단정하지 마세요.
+- 사용자 메시지에 "소제목 정보", "이미지 정보", "링크 정보"가 실제로 확인된 사실로 함께 제공됩니다. 반드시 그대로 신뢰하고, 절대 이 사실과 다르게 말하지 마세요.
+  - 소제목이 있다고 나오면 "소제목이 없다"고 말하지 말고, 대신 키워드가 잘 들어갔는지·개수가 충분한지를 평가하세요.
+  - 이미지에 사진 설명 글(alt)이 이미 있다고 나오면 "사진 설명 글이 없다"고 말하지 마세요. 대신 그 설명 글이 사진 내용을 구체적으로 잘 담고 있는지, 부족한 나머지 이미지들에만 추가하라고 하세요.
+  - 본문 링크가 있다고 나오면 "링크가 없다"고 말하지 말고, 그 개수가 충분한지만 언급하세요.
+  - "확인할 수 없다"고 안내된 항목은 절대 단정하지 말고, 언급 자체를 생략하거나 "확인이 어려워 일반적인 조언만 드려요" 정도로만 다루세요.
+- 내부링크(다른 글로 연결하는 링크)를 추천할 때는 절대로 "아무 글이나 연결하라"고 하지 마세요. 반드시 "이 글과 실제로 주제가 겹치는 글이 있을 때만" 자연스러운 문장 속에서 연결하라고 안내하세요. 관련 없는 글을 억지로 링크하면 오히려 방문자가 바로 이탈해서 역효과라는 점도 필요하면 짧게 언급하세요. 블로그 하단에 자동으로 뜨는 "관련 글" 목록과 본문 안 링크는 다르다는 것도 헷갈리지 않게 구분해서 말하세요 (본문 링크가 더 효과가 큽니다).
 
 정확히 아래 JSON 형식으로만, 마크다운 코드블록 없이 순수 JSON으로 답변하세요:
 {
@@ -120,11 +188,17 @@ export default async function handler(req, res) {
 
     const userContent =
       (ownTitle ? `[제목]\n${ownTitle}\n\n` : '') +
-      `[${headingInfo}]\n\n` +
+      `[소제목 정보]\n${headingInfo}\n\n` +
+      `[이미지 정보]\n${imageInfo}\n\n` +
+      `[링크 정보]\n${linkInfo}\n\n` +
       `[본문]\n${textToAnalyze}`;
+
     const analysisRaw = await callGroq(systemPrompt, userContent);
     const cleanJson = analysisRaw.replace(/```json\n?|\n?```/g, '').trim();
     const result = JSON.parse(cleanJson);
+
+    // 참고용: 구조를 실제로 확인했는지 여부를 프론트엔드에도 함께 전달 (필요시 UI에 표시 가능)
+    result.structure_known = structureKnown;
 
     return res.status(200).json(result);
   } catch (error) {
